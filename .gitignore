@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# Virtual environment
+venv/
+env/
+.venv/
+
+# Environment & secrets
+.env
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Test images (generated)
+test_plate.jpg
+bench_plate.jpg
+
+# Uploads
+/tmp/
+calor_ai_uploads/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Pytest
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Build
+dist/
+build/
+*.egg-info/
