@@ -173,7 +173,7 @@ def run_eval_suite() -> Dict[str, Any]:
         print(f"\n[Test {test['id']}/11] {test['name']}")
         print(f"  User Input : '{test['input']}'" + (f" [Image: {test['image']}]" if test['image'] else ""))
 
-        time.sleep(0.5)
+        time.sleep(1.5)
         t0 = time.time()
         res = run_agent_turn(
             user_id=TEST_USER_ID,

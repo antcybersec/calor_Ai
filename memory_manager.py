@@ -21,16 +21,18 @@ def _get_extraction_llm():
 
     if gemini_key and not gemini_key.startswith("your_"):
         from langchain_google_genai import ChatGoogleGenerativeAI
+        # Use fallback lite model to avoid competing with text runner quota
         model_name = os.getenv("DEFAULT_TEXT_MODEL", "gemini-3.5-flash-lite")
         return ChatGoogleGenerativeAI(
             model=model_name,
             google_api_key=gemini_key,
             temperature=1,
             thinking_budget=0,
+            max_retries=0,
         )
     if openai_key and not openai_key.startswith("your_") and openai_key != "mock_key":
         from langchain_openai import ChatOpenAI
-        return ChatOpenAI(model="gpt-4o-mini", api_key=openai_key, temperature=0.0)
+        return ChatOpenAI(model="gpt-4o-mini", api_key=openai_key, temperature=0.0, max_retries=0)
     return None
 
 
@@ -79,9 +81,14 @@ def extract_and_save_memories(user_id: str, user_text: str, assistant_response: 
             m = save_memory(user_id, "usual_meal", "my_usual", usual_val)
             extracted.append(m)
 
+    # Bare reference queries contain no new facts to extract
+    if text_lower in ["my usual", "usual", "same as yesterday", "same", "yesterday", "same as usual"]:
+        return extracted
+
     # --- LLM-Assisted Extraction for Complex Facts ---
     # Only trigger for messages that likely contain memorable facts
-    trigger_words = ["usual", "favorite", "always", "normally", "typically", "every day",
+    trigger_words = ["favorite", "always", "normally", "typically", "every day",
+                     "usually eat", "usually have", "usual is",
                      "goal", "target", "plan", "trying to", "never eat", "don't eat", "hate"]
     should_extract_with_llm = any(w in text_lower for w in trigger_words)
 
