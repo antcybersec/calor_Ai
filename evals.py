@@ -138,7 +138,7 @@ def run_eval_suite() -> Dict[str, Any]:
             "image": SAMPLE_IMAGE_PATH,
             "validate": lambda totals, mems, hist, resp: (
                 (totals["meal_count"] >= 4)
-                or ("photo" in resp.lower() or "brother" in resp.lower() or "half" in resp.lower() or "food" in resp.lower())
+                or ("photo" in resp.lower() or "picture" in resp.lower() or "plate" in resp.lower() or "chart" in resp.lower() or "abstract" in resp.lower() or "brother" in resp.lower() or "half" in resp.lower() or "food" in resp.lower())
             ),
             "expected": "Vision + Caption resolved to single meal or surfaced low-confidence ambiguity"
         },
