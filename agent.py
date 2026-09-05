@@ -156,7 +156,18 @@ def agent_node(state: AgentState) -> Dict[str, Any]:
     injected_parts = []
 
     if vision_data:
-        confidence = vision_data.get("confidence", 1.0)
+        raw_conf = vision_data.get("confidence", 1.0)
+        try:
+            confidence = float(raw_conf)
+        except (ValueError, TypeError):
+            conf_str = str(raw_conf).lower()
+            if "low" in conf_str:
+                confidence = 0.2
+            elif "med" in conf_str or "mod" in conf_str:
+                confidence = 0.5
+            else:
+                confidence = 0.8
+
         ambiguity = vision_data.get("ambiguity_notes", "")
         if confidence < 0.4:
             injected_parts.append(

@@ -136,7 +136,10 @@ def analyze_meal_image(
 
             prompt_text = (
                 "You are an expert vision nutrition analyzer for CalorAI.\n"
-                "Analyze the meal photo and output ONLY JSON with keys: description, confidence, ambiguity_notes, caption_applied, items, total_calories, total_protein_g, total_carbs_g, total_fat_g.\n"
+                "Analyze the meal photo and output ONLY a JSON object with keys: "
+                "description (string), confidence (float between 0.0 and 1.0), ambiguity_notes (string), "
+                "caption_applied (string), items (list of objects with name, calories, protein_g, carbs_g, fat_g), "
+                "total_calories (float), total_protein_g (float), total_carbs_g (float), total_fat_g (float).\n"
                 f"Caption context: '{caption or 'None'}'"
             )
             message = HumanMessage(
@@ -151,6 +154,11 @@ def analyze_meal_image(
             res = llm.invoke([message])
             clean_str = res.content.strip().replace("```json", "").replace("```", "").strip()
             parsed = json.loads(clean_str)
+            try:
+                parsed["confidence"] = float(parsed.get("confidence", 0.8))
+            except (ValueError, TypeError):
+                conf_s = str(parsed.get("confidence", "")).lower()
+                parsed["confidence"] = 0.2 if "low" in conf_s else (0.5 if "med" in conf_s else 0.8)
             parsed["source_model"] = gemini_vision_model
             return parsed
         except Exception as e:
