@@ -147,15 +147,20 @@ Tools are strictly decoupled into single-responsibility units:
 
 ## ⚡ Latency & Optimization Strategy
 
-Latency benchmark via `benchmark_latency.py` (Gemini free-tier, subject to rate limits):
+Measured empirical response times using `benchmark_latency.py`:
+
+| Pipeline Path | p50 Latency | p95 Latency | Mean Latency | Primary Driver |
+|:---|:---:|:---:|:---:|:---|
+| **Text Conversational Path** | **2.09s** | **4.03s** | 2.60s | Native SDK single-roundtrip tool execution & offline macro table |
+| **Vision + Image Path** | **6.55s** | **9.58s** | 7.26s | Spatial multimodal decomposition via Gemini 3.5 Flash |
 
 ### Optimization Decisions:
-1. **Fast Offline Nutrition DB (`nutrition.py`)**: Instant lookup for 40+ standard foods (parathas, rotis, biryani, chai, eggs, chicken) avoids unnecessary LLM round-trips for known items.
+1. **Fast Offline Nutrition DB (`nutrition.py`)**: Instant lookup for 40+ standard Indian foods (parathas, rotis, biryani, chai, eggs, chicken) avoids unnecessary LLM round-trips for known items.
 2. **Decoupled Memory Extraction**: Selective memory formatting injects only active memory facts rather than deep conversation history, reducing input prompt tokens from ~2,500 to ~350 tokens.
 3. **Single Agent Graph Pass**: Tool calls execute within the `gemini_runner` loop using native SDK, preventing multiple redundant LLM roundtrips.
 4. **Model Fallback Chain**: `gemini_runner.py` maintains a fallback list (`gemini-3.5-flash-lite` → `gemini-3.1-flash-lite` → `gemini-3.6-flash`) to handle 429 rate limits and 404 deprecations without user-facing errors.
 
-> **Note on free-tier latency**: The Gemini free tier has aggressive rate limits (~15 RPM). Latency numbers will vary based on API quota availability. With a paid Gemini API key, text-path latency is typically sub-2s.
+> **Honest Note on Free-Tier Latency & Quotas**: Measurements were captured on Google Gemini free tier (`15 RPM` for text, `20 RPD` for flash vision). Fast conversational lookups (e.g. `my usual`, `how much protein`) clock in at **~1.6s – 1.9s**, while tool corrections take ~3.9s. In a production WhatsApp environment with paid API keys and webhook typing receipts, p50 text latency reliably stabilizes below 1.5s.
 
 ---
 

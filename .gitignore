@@ -17,6 +17,8 @@ env/
 *.db
 *.sqlite
 *.sqlite3
+*.db-wal
+*.db-shm
 
 # Test images (generated)
 test_plate.jpg

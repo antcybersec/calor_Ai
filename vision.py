@@ -164,42 +164,16 @@ def analyze_meal_image(
         except Exception as e:
             print(f"[Vision Pipeline Warning] Gemini Vision call failed: {e}")
 
-    # 3. Smart Mock Vision Fallback
-    caption_lower = (caption or "").lower()
-    portion_factor = 1.0
-    if "half" in caption_lower or "1/2" in caption_lower:
-        portion_factor = 0.5
-    elif "third" in caption_lower or "1/3" in caption_lower:
-        portion_factor = 0.33
-    elif "quarter" in caption_lower or "1/4" in caption_lower:
-        portion_factor = 0.25
-
+    # 3. Graceful Ambiguity Fallback (Surfaces uncertainty rather than hallucinating food)
     return {
-        "description": "Visual plate analysis: Grilled chicken breast with brown rice, steamed broccoli, and roasted potatoes.",
-        "confidence": 0.88,
-        "ambiguity_notes": "None. Portion sizes estimated from visual plate proportion.",
-        "caption_applied": f"Portion scaled by factor of {portion_factor} based on user caption: '{caption}'" if caption else "Full portion logged.",
-        "items": [
-            {
-                "name": "Grilled Chicken Breast",
-                "portion": f"{round(150 * portion_factor)}g",
-                "calories": round(220 * portion_factor, 1),
-                "protein_g": round(30.0 * portion_factor, 1),
-                "carbs_g": round(1.0 * portion_factor, 1),
-                "fat_g": round(9.0 * portion_factor, 1)
-            },
-            {
-                "name": "Brown Rice",
-                "portion": f"{round(1.0 * portion_factor, 2)} cup",
-                "calories": round(180 * portion_factor, 1),
-                "protein_g": round(3.5 * portion_factor, 1),
-                "carbs_g": round(40.0 * portion_factor, 1),
-                "fat_g": round(1.0 * portion_factor, 1)
-            }
-        ],
-        "total_calories": round((220 + 180) * portion_factor, 1),
-        "total_protein_g": round((30.0 + 3.5) * portion_factor, 1),
-        "total_carbs_g": round((1.0 + 40.0) * portion_factor, 1),
-        "total_fat_g": round((9.0 + 1.0) * portion_factor, 1),
-        "source_model": "mock_vision_fallback"
+        "description": "Image could not be parsed by the vision pipeline.",
+        "confidence": 0.1,
+        "ambiguity_notes": "Vision model was unavailable or photo was unidentifiable. Clarification required.",
+        "caption_applied": caption or "None",
+        "items": [],
+        "total_calories": 0.0,
+        "total_protein_g": 0.0,
+        "total_carbs_g": 0.0,
+        "total_fat_g": 0.0,
+        "source_model": "vision_unresolved_fallback"
     }

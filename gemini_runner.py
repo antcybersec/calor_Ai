@@ -168,7 +168,7 @@ def run_gemini_agent(
                 # Add tool results as a user turn (native format, no stripping)
                 contents.append(types.Content(role="user", parts=fn_response_parts))
 
-            return "I've processed your request."
+            return "Got it! I've processed your update and adjusted your log."
 
         except Exception as e:
             err_str = str(e)
@@ -180,5 +180,5 @@ def run_gemini_agent(
 
     if last_error:
         raise last_error
-    return "I've processed your request."
+    return "Got it! I've processed your update and adjusted your log."
 
