@@ -124,7 +124,13 @@ def analyze_meal_image(
             from langchain_google_genai import ChatGoogleGenerativeAI
             from langchain_core.messages import HumanMessage
 
-            llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=gemini_key)
+            gemini_vision_model = os.getenv("DEFAULT_VISION_MODEL", "gemini-3.5-flash-lite")
+            llm = ChatGoogleGenerativeAI(
+                model=gemini_vision_model,
+                google_api_key=gemini_key,
+                temperature=1,
+                thinking_budget=0,
+            )
             base64_image = encode_image_to_base64(image_path)
             mime_type = get_image_mime_type(image_path)
 
@@ -145,7 +151,7 @@ def analyze_meal_image(
             res = llm.invoke([message])
             clean_str = res.content.strip().replace("```json", "").replace("```", "").strip()
             parsed = json.loads(clean_str)
-            parsed["source_model"] = "gemini-2.5-flash"
+            parsed["source_model"] = gemini_vision_model
             return parsed
         except Exception as e:
             print(f"[Vision Pipeline Warning] Gemini Vision call failed: {e}")

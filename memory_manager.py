@@ -21,10 +21,12 @@ def _get_extraction_llm():
 
     if gemini_key and not gemini_key.startswith("your_"):
         from langchain_google_genai import ChatGoogleGenerativeAI
+        model_name = os.getenv("DEFAULT_TEXT_MODEL", "gemini-3.5-flash-lite")
         return ChatGoogleGenerativeAI(
-            model="gemini-2.5-flash",
+            model=model_name,
             google_api_key=gemini_key,
-            temperature=0.0
+            temperature=1,
+            thinking_budget=0,
         )
     if openai_key and not openai_key.startswith("your_") and openai_key != "mock_key":
         from langchain_openai import ChatOpenAI

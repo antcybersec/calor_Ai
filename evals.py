@@ -89,8 +89,10 @@ def run_eval_suite() -> Dict[str, Any]:
             "input": "actually that was 3 rotis not 2",
             "image": None,
             "validate": lambda totals, mems, hist, resp: (
-                # Ensures correction updated meal totals without doubling previous entry
-                totals["total_calories"] > 0 and "correct" in resp.lower() or "update" in resp.lower() or totals["meal_count"] >= 2
+                # Correction must NOT double-count: total calories should stay reasonable
+                # (prev meals + corrected meal should be < 2000 kcal for these small test meals)
+                totals["total_calories"] > 0 and totals["total_calories"] < 2000
+                and ("correct" in resp.lower() or "update" in resp.lower() or "3" in resp)
             ),
             "expected": "Corrected rotis without double-counting calories"
         },
@@ -124,6 +126,7 @@ def run_eval_suite() -> Dict[str, Any]:
             "image": SAMPLE_IMAGE_PATH,
             "validate": lambda totals, mems, hist, resp: (
                 totals["meal_count"] >= 3
+                and len(resp) > 20  # Response should describe what was logged
             ),
             "expected": "Vision model processed plate photo"
         },

@@ -13,7 +13,7 @@ CalorAI eliminates meal logging friction. Users text what they ate in plain conv
 1. **LangGraph Agent Architecture with Tool Calling**: Clean multi-turn state graph with decoupled tool surfaces for logging, corrections, totals, history, nutrition lookups, and memory management.
 2. **Persistent Database (SQLite)**: Full transaction logging in `calor_ai.db` across sessions and restarts, tracking raw inputs, itemized macros, timestamps, and meal revision statuses.
 3. **Running Daily Totals**: Real-time calorie and macro accumulation for the current day. Prevents double-counting during meal edits and corrections.
-4. **Dual-Model Vision Routing**: Separate model routing for plate images (`gpt-4o` / `gemini-1.5-pro` vision) vs. fast text conversation (`gpt-4o-mini`). Handoff logic cleanly resolves photos + user captions (*"half of this was my brother's"*) to a single scaled meal.
+4. **Dual-Model Vision Routing**: Separate model routing for plate images (`gemini-3.5-flash` for visual reasoning) vs. fast text conversation (`gemini-3.5-flash-lite`). Handoff logic cleanly resolves photos + user captions (*"half of this was my brother's"*) to a single scaled meal.
 5. **Selective Memory Engine (Across Sessions)**: Decouples long-term facts (*"vegetarian"*, *"my usual = 2 parathas + chai"*, *"140g protein target"*) from raw chat logs. Stores facts in DB and selectively injects them into system prompts without context bloat.
 6. **Multi-Turn Ambiguity Handling**: Makes reasonable initial portion assumptions for quick user logging while keeping the response conversational. Only asks clarifying questions when input is completely obscure.
 
@@ -23,12 +23,12 @@ CalorAI eliminates meal logging friction. Users text what they ate in plain conv
 
 ### 1. Prerequisites
 - Python 3.9+
-- OpenAI API Key (or Google Gemini API Key)
+- Google Gemini API Key
 
 ### 2. Installation
 ```bash
 # Clone repository
-git clone https://github.com/your-username/calor-ai.git
+git clone https://github.com/antcybersec/calor_Ai.git
 cd calor_Ai
 
 # Create & activate virtual environment
@@ -42,9 +42,9 @@ pip install -r requirements.txt
 ### 3. Environment Configuration
 Create a `.env` file in the project root (or copy from `.env.example`):
 ```env
-OPENAI_API_KEY=your_openai_api_key_here
-DEFAULT_TEXT_MODEL=gpt-4o-mini
-DEFAULT_VISION_MODEL=gpt-4o
+GEMINI_API_KEY=your_gemini_api_key_here
+DEFAULT_TEXT_MODEL=gemini-3.5-flash-lite
+DEFAULT_VISION_MODEL=gemini-3.5-flash
 DATABASE_PATH=calor_ai.db
 ```
 
@@ -66,7 +66,8 @@ Open [http://localhost:8000](http://localhost:8000) in your browser to access th
 
 #### Automated Test Suite & Evals:
 ```bash
-python evals.py
+pytest                # Unit tests (4 tests)
+python evals.py       # Full 11-step conversation evaluation
 ```
 
 #### Latency Benchmarking:
@@ -108,12 +109,13 @@ python benchmark_latency.py
 ```
 User Message + Optional Image
              │
-             ├──► Has Image? ──► YES ──► Vision Model (GPT-4o / Gemini 1.5 Pro)
+             ├──► Has Image? ──► YES ──► Vision Model (gemini-3.5-flash)
              │                              │ - Detects food items
              │                              │ - Applies caption factor ("half of this")
              │                              │ - Estimates calories & confidence score
              │                              ▼
-             └──► Text Query ──────────► LangGraph Main Agent (GPT-4o-mini)
+             └──► Text Query ──────────► Native Gemini Agent (gemini-3.5-flash-lite)
+                                            │ - Tool-calling via google-genai SDK
                                             │ - Integrates memory profile
                                             │ - Invokes tools (log, correct, totals)
                                             ▼
@@ -121,8 +123,9 @@ User Message + Optional Image
 ```
 
 ### Model Selection Rationale:
-- **Text Model (`gpt-4o-mini`)**: Chosen for sub-1.5s latency, high function-calling accuracy, and minimal cost (~$0.0001 per turn).
-- **Vision Model (`gpt-4o`)**: Chosen for world-class spatial food recognition and fine-grained portion estimation.
+- **Text Model (`gemini-3.5-flash-lite`)**: Chosen for minimal latency, reliable tool-calling, and zero cost on free tier. Handles conversation flow, tool routing, and macro estimation.
+- **Vision Model (`gemini-3.5-flash`)**: More capable model routed for plate image analysis. Handles spatial food recognition, portion estimation, and structured JSON extraction from photos.
+- **Why Native SDK instead of LangChain for Tool Calling**: LangChain's `langchain-google-genai` integration strips `thought_signature` fields during message serialization, causing `400 Invalid argument` errors on multi-turn tool calling with all current Gemini models. `gemini_runner.py` uses the native `google-genai` SDK, preserving raw `Content` objects across turns so thought signatures remain intact. LangChain is still used for vision (single-turn, no tool calling) and for tool schema definitions.
 - **Handoff Mechanism**: When a user submits an image (with or without caption), `vision.analyze_meal_image()` processes the image first, outputting a structured JSON payload (`items`, `portion_multiplier`, `confidence`). This payload is passed to the main agent as a system context note, ensuring photo + caption resolve to **one single meal record**.
 
 ---
@@ -142,27 +145,26 @@ Tools are strictly decoupled into single-responsibility units:
 
 ---
 
-## ⚡ Latency Measurements & Optimization (p50 / p95)
+## ⚡ Latency & Optimization Strategy
 
-Latency benchmark executed via `benchmark_latency.py`:
+Latency benchmark via `benchmark_latency.py` (Gemini free-tier, subject to rate limits):
 
-| Execution Path | p50 (Median) | p95 Latency | Mean Latency | Optimization Techniques |
-| --- | --- | --- | --- | --- |
-| **Text Path** | **1.18s** | **1.84s** | **1.26s** | Lightweight `gpt-4o-mini`, offline local nutrition cache, compact prompt memory injection |
-| **Vision Path** | **3.42s** | **4.91s** | **3.65s** | Base64 pre-encoding, single-pass visual extraction, direct structured JSON output |
-
-### Latency Optimization Decisions:
-1. **Fast Offline Nutrition DB (`nutrition.py`)**: Instant lookup for standard foods (parathas, rotis, biryani, chai, eggs, chicken) avoids unnecessary web/LLM searches.
+### Optimization Decisions:
+1. **Fast Offline Nutrition DB (`nutrition.py`)**: Instant lookup for 40+ standard foods (parathas, rotis, biryani, chai, eggs, chicken) avoids unnecessary LLM round-trips for known items.
 2. **Decoupled Memory Extraction**: Selective memory formatting injects only active memory facts rather than deep conversation history, reducing input prompt tokens from ~2,500 to ~350 tokens.
-3. **Single Agent Graph Pass**: Tool calls execute synchronously within the graph loop, preventing multiple redundant LLM roundtrips.
+3. **Single Agent Graph Pass**: Tool calls execute within the `gemini_runner` loop using native SDK, preventing multiple redundant LLM roundtrips.
+4. **Model Fallback Chain**: `gemini_runner.py` maintains a fallback list (`gemini-3.5-flash-lite` → `gemini-3.1-flash-lite` → `gemini-3.6-flash`) to handle 429 rate limits and 404 deprecations without user-facing errors.
+
+> **Note on free-tier latency**: The Gemini free tier has aggressive rate limits (~15 RPM). Latency numbers will vary based on API quota availability. With a paid Gemini API key, text-path latency is typically sub-2s.
 
 ---
 
 ## ⚖️ Assumptions & Trade-offs
 
 1. **Local SQLite vs. Hosted Supabase**: Used SQLite for zero-config local evaluation, clean clone execution, and instant unit testing.
-2. **Ambiguity Line**: Prioritized messaging velocity over endless form questions. If a user says *"had biryani"*, CalorAI logs a standard portion (~450 kcal) and informs the user, letting them correct it naturally if needed.
-3. **Nutrition Accuracy**: Uses standard Indian/global serving estimates. Precise gram-level accuracy is secondary to conversational usability and trend tracking.
+2. **Native SDK vs. LangChain for Agent Loop**: LangChain's Gemini integration has a known bug stripping `thought_signature` fields from multi-turn tool call history. The native `google-genai` SDK resolves this while still using LangChain for tool definitions and the state graph.
+3. **Ambiguity Line**: Prioritized messaging velocity over endless form questions. If a user says *"had biryani"*, CalorAI logs a standard portion (~450 kcal) and informs the user, letting them correct it naturally if needed.
+4. **Nutrition Accuracy**: Uses standard Indian/global serving estimates. Precise gram-level accuracy is secondary to conversational usability and trend tracking.
 
 ---
 
@@ -183,7 +185,7 @@ Latency benchmark executed via `benchmark_latency.py`:
 
 1. **Twilio / WhatsApp Business API Webhook**: Connect `app.py` directly to Twilio WhatsApp webhooks for live phone messaging.
 2. **Voice Note Transcriptions**: Add OpenAI Whisper audio endpoint for voice message logs on WhatsApp.
-3. **LangSmith Deep Tracing Integration**: Full tracing setup with `LANGCHAIN_TRACING_V2=true` for agent step monitoring.
+3. **LangSmith Deep Tracing**: Full trace visibility is already wired via `LANGCHAIN_TRACING_V2=true` in `.env` for agent step monitoring and debugging.
 
 ---
 
@@ -191,4 +193,5 @@ Latency benchmark executed via `benchmark_latency.py`:
 
 Developed using **Antigravity AI (Gemini 3.6 Flash / High)** as pair-programming partner:
 - **Code Generation & Boilerplate**: Accelerated database schema creation, FastAPI routes, and rich terminal formatting.
+- **Debugging**: Identified and resolved the LangChain `thought_signature` stripping bug by pivoting to native SDK.
 - **Architectural Refinement**: Assisted in designing the selective memory DB schema and single-meal vision caption handoff.

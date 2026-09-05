@@ -37,7 +37,7 @@ TEMP_UPLOAD_DIR = os.path.join(tempfile.gettempdir(), "calor_ai_uploads")
 os.makedirs(TEMP_UPLOAD_DIR, exist_ok=True)
 
 @app.post("/api/chat")
-async def chat_endpoint(
+def chat_endpoint(
     user_id: str = Form("web_user"),
     session_id: str = Form("web_session"),
     message: str = Form(""),

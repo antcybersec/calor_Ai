@@ -35,6 +35,7 @@ from memory_manager import (
 )
 from vision import analyze_meal_image
 from tools import ALL_TOOLS
+from gemini_runner import run_gemini_agent
 
 load_dotenv()
 
@@ -70,23 +71,11 @@ TONE: Warm, concise, like texting a knowledgeable friend. No bullet-point lists 
 
 # ── LLM Factory ───────────────────────────────────────────────────────────────
 
-def get_llm(bind_tools: bool = True):
-    """Return the primary conversation LLM with optional tool binding."""
+def _get_api_key() -> Optional[str]:
+    """Return a configured API key or None."""
     gemini_key = os.getenv("GEMINI_API_KEY", "")
-    openai_key = os.getenv("OPENAI_API_KEY", "")
-
     if gemini_key and not gemini_key.startswith("your_"):
-        llm = ChatGoogleGenerativeAI(
-            model="gemini-2.5-flash",
-            google_api_key=gemini_key,
-            temperature=0.3,
-        )
-        return llm.bind_tools(ALL_TOOLS) if bind_tools else llm
-
-    if openai_key and not openai_key.startswith("your_") and openai_key != "mock_key":
-        llm = ChatOpenAI(model="gpt-4o-mini", api_key=openai_key, temperature=0.3)
-        return llm.bind_tools(ALL_TOOLS) if bind_tools else llm
-
+        return gemini_key
     return None
 
 # ── Graph Nodes ────────────────────────────────────────────────────────────────
@@ -141,125 +130,98 @@ def process_input_node(state: AgentState) -> Dict[str, Any]:
 
 def agent_node(state: AgentState) -> Dict[str, Any]:
     """
-    Core LLM agent node. Builds full context prompt and calls Gemini with tools.
-    Surfaces vision uncertainty to user instead of silently logging low-confidence meals.
+    Core agent node. Uses native google-genai SDK to run the full
+    tool-calling loop in one shot. Thought signatures are preserved
+    internally by the SDK — no langchain serialization stripping.
     """
-    llm = get_llm(bind_tools=True)
-    if not llm:
-        # No API key configured at all
-        return {"messages": [AIMessage(content="Please configure a GEMINI_API_KEY or OPENAI_API_KEY in your .env file to use CalorAI.")]}
+    api_key = _get_api_key()
+    if not api_key:
+        return {"messages": [AIMessage(content="Please set GEMINI_API_KEY in your .env file.")]}
 
+    model = os.getenv("DEFAULT_TEXT_MODEL", "gemini-3.5-flash-lite")
     user_id = state.get("user_id", "default_user")
     memories_str = state.get("user_memories_summary", "")
     totals_str = state.get("daily_totals_summary", "")
     vision_data = state.get("vision_analysis")
     ref_data = state.get("resolved_reference")
 
-    system_content = SYSTEM_PROMPT.format(
-        memories_context=f"\n{memories_str}" if memories_str else "",
-        totals_context=f"\n{totals_str}" if totals_str else "",
+    mem_ctx = f"\n{memories_str}" if memories_str else ""
+    tot_ctx = f"\n{totals_str}" if totals_str else ""
+    system_content = (
+        f"{SYSTEM_PROMPT.format(memories_context=mem_ctx, totals_context=tot_ctx)}\n\n"
+        f"CURRENT USER ID: '{user_id}'. You must pass user_id='{user_id}' in every tool call."
     )
 
-    injected_context_parts = []
+    # Build injected context (vision output, resolved references)
+    injected_parts = []
 
-    # Inject vision model output (separate model's results handed off here)
     if vision_data:
         confidence = vision_data.get("confidence", 1.0)
         ambiguity = vision_data.get("ambiguity_notes", "")
-
         if confidence < 0.4:
-            # Low confidence — surface to user instead of guessing
-            injected_context_parts.append(
-                f"[VISION MODEL RESULT — LOW CONFIDENCE: {confidence}]\n"
-                f"The photo was unclear. Description: {vision_data.get('description', 'unknown')}\n"
+            injected_parts.append(
+                f"[VISION — LOW CONFIDENCE: {confidence}]\n"
+                f"Could not clearly identify the food. Description: {vision_data.get('description', 'unknown')}\n"
                 f"Ambiguity: {ambiguity}\n"
-                "INSTRUCTION: Tell the user you couldn't clearly identify the food in the photo and ask them to describe what they ate instead. Do NOT log a meal."
-            )
-        elif confidence < 0.7:
-            # Medium confidence — log but be transparent
-            items_str = json.dumps(vision_data.get("items", []))
-            injected_context_parts.append(
-                f"[VISION MODEL RESULT — MODERATE CONFIDENCE: {confidence}]\n"
-                f"Description: {vision_data.get('description')}\n"
-                f"Caption adjustment: {vision_data.get('caption_applied', 'none')}\n"
-                f"Detected items: {items_str}\n"
-                f"Estimated totals: {vision_data.get('total_calories')} kcal | {vision_data.get('total_protein_g')}g protein\n"
-                "INSTRUCTION: Log this meal using log_meal_tool, but tell the user what you estimated and that they can correct if wrong."
+                "INSTRUCTION: Ask user to describe what they ate instead. Do NOT log."
             )
         else:
-            # High confidence — log normally
             items_str = json.dumps(vision_data.get("items", []))
-            injected_context_parts.append(
-                f"[VISION MODEL RESULT — HIGH CONFIDENCE: {confidence}]\n"
+            qualifier = "HIGH" if confidence >= 0.7 else "MODERATE"
+            injected_parts.append(
+                f"[VISION — {qualifier} CONFIDENCE: {confidence}]\n"
                 f"Description: {vision_data.get('description')}\n"
-                f"Caption adjustment: {vision_data.get('caption_applied', 'none')}\n"
-                f"Detected items: {items_str}\n"
-                f"Total: {vision_data.get('total_calories')} kcal | {vision_data.get('total_protein_g')}g protein\n"
-                f"INSTRUCTION: Log this as a single meal using log_meal_tool for user_id '{user_id}'. Do NOT ask for confirmation."
+                f"Items: {items_str}\n"
+                f"Totals: {vision_data.get('total_calories')} kcal | {vision_data.get('total_protein_g')}g protein\n"
+                f"INSTRUCTION: Log using log_meal_tool for user_id '{user_id}'." +
+                ("\nTell user what was estimated and they can correct." if confidence < 0.7 else "")
             )
 
-    # Inject resolved meal reference
     if ref_data:
         if ref_data.get("total_calories") is None:
-            # Needs estimation — let LLM handle
-            injected_context_parts.append(
-                f"[RESOLVED MEAL REFERENCE]\n"
-                f"User's '{ref_data.get('description')}' is their saved usual meal but no nutritional history found.\n"
-                f"INSTRUCTION: Estimate calories/macros for '{ref_data.get('description')}' from your knowledge and log it with log_meal_tool."
+            injected_parts.append(
+                f"[RESOLVED REFERENCE]\nUser's usual meal is '{ref_data.get('description')}' but no nutrition history found.\n"
+                "INSTRUCTION: Estimate and log using log_meal_tool."
             )
         else:
             items_str = json.dumps(ref_data.get("items", []))
-            injected_context_parts.append(
-                f"[RESOLVED MEAL REFERENCE — source: {ref_data.get('source')}]\n"
+            injected_parts.append(
+                f"[RESOLVED REFERENCE — {ref_data.get('source')}]\n"
                 f"Items: {items_str}\n"
-                f"Total: {ref_data.get('total_calories')} kcal | {ref_data.get('total_protein_g')}g protein\n"
-                f"INSTRUCTION: Log this resolved meal using log_meal_tool for user_id '{user_id}'."
+                f"Totals: {ref_data.get('total_calories')} kcal | {ref_data.get('total_protein_g')}g protein\n"
+                f"INSTRUCTION: Log using log_meal_tool for user_id '{user_id}'."
             )
 
-    full_messages = [SystemMessage(content=system_content)]
-    if injected_context_parts:
-        full_messages.append(SystemMessage(content="\n\n---\n".join(injected_context_parts)))
-    full_messages.extend(state["messages"])
+    injected_context = "\n\n---\n".join(injected_parts)
+
+    # Get last user message
+    messages = state.get("messages", [])
+    user_text = ""
+    for msg in reversed(messages):
+        if isinstance(msg, HumanMessage):
+            user_text = str(msg.content)
+            break
+    if not user_text:
+        user_text = "Hi"
 
     try:
-        response = llm.invoke(full_messages)
-        return {"messages": [response]}
+        response_text = run_gemini_agent(
+            api_key=api_key,
+            model=model,
+            system_prompt=system_content,
+            user_message=user_text,
+            lc_tools=ALL_TOOLS,
+            injected_context=injected_context,
+            user_id=user_id,
+        )
     except Exception as e:
-        error_str = str(e)
-        # Rate limit — give a clear message rather than silently falling back
-        if "429" in error_str or "quota" in error_str.lower() or "rate" in error_str.lower():
-            return {"messages": [AIMessage(content="I'm at my API rate limit for this minute — please try again in 30 seconds.")]}
-        return {"messages": [AIMessage(content=f"Something went wrong — please try again. (Error: {error_str[:80]})")]}
+        err = str(e)
+        if "429" in err or "quota" in err.lower() or "rate" in err.lower():
+            response_text = "I'm at my API rate limit — please try again in 30 seconds."
+        else:
+            response_text = f"Something went wrong: {err[:120]}"
 
-
-def execute_tools_node(state: AgentState) -> Dict[str, Any]:
-    """Execute tool calls requested by the LLM in the previous step."""
-    user_id = state.get("user_id", "default_user")
-    last_message = state["messages"][-1]
-    tool_name_map = {t.name: t for t in ALL_TOOLS}
-    tool_outputs = []
-
-    if hasattr(last_message, "tool_calls") and last_message.tool_calls:
-        for call in last_message.tool_calls:
-            t_name = call["name"]
-            t_args = call["args"]
-            t_id = call["id"]
-
-            # Always inject the correct user_id — prevents cross-user data leaks
-            t_args["user_id"] = user_id
-
-            target_tool = tool_name_map.get(t_name)
-            if target_tool:
-                try:
-                    result_str = target_tool.invoke(t_args)
-                except Exception as ex:
-                    result_str = json.dumps({"status": "error", "message": str(ex)})
-            else:
-                result_str = json.dumps({"status": "error", "message": f"Unknown tool: {t_name}"})
-
-            tool_outputs.append(ToolMessage(content=result_str, tool_call_id=t_id))
-
-    return {"messages": tool_outputs}
+    return {"messages": [AIMessage(content=response_text)]}
 
 
 def memory_extractor_node(state: AgentState) -> Dict[str, Any]:
@@ -292,15 +254,6 @@ def memory_extractor_node(state: AgentState) -> Dict[str, Any]:
     return {"final_output": final_text}
 
 
-# ── Routing ───────────────────────────────────────────────────────────────────
-
-def should_execute_tools(state: AgentState) -> str:
-    last = state["messages"][-1]
-    if hasattr(last, "tool_calls") and last.tool_calls:
-        return "execute_tools"
-    return "memory_extractor"
-
-
 # ── Graph Assembly ────────────────────────────────────────────────────────────
 
 def build_agent_graph():
@@ -308,18 +261,12 @@ def build_agent_graph():
     builder.add_node("load_context", load_context_node)
     builder.add_node("process_input", process_input_node)
     builder.add_node("agent", agent_node)
-    builder.add_node("execute_tools", execute_tools_node)
     builder.add_node("memory_extractor", memory_extractor_node)
 
     builder.set_entry_point("load_context")
     builder.add_edge("load_context", "process_input")
     builder.add_edge("process_input", "agent")
-    builder.add_conditional_edges(
-        "agent",
-        should_execute_tools,
-        {"execute_tools": "execute_tools", "memory_extractor": "memory_extractor"}
-    )
-    builder.add_edge("execute_tools", "agent")
+    builder.add_edge("agent", "memory_extractor")
     builder.add_edge("memory_extractor", END)
     return builder.compile()
 
